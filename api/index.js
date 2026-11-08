@@ -34,10 +34,31 @@ function readBody(req) {
 }
 
 function seg(req) {
-  // 生产环境：/api/publish 经 vercel.json 重写到 /api/index.js，req.url 仍是原路径
-  // 本地环境：server.js 直接调用本函数，req.url 同样是 /api/publish
+  // ① Vercel 生产环境：api/[...slug].js 是 catch-all 路由，Vercel 会把路径段塞进 query.slug
+  //    （不要用 vercel.json 的 rewrites 转发，那会把原始路径替换掉，导致所有接口都变成 404）
+  const q = req.query || {};
+  if (q.slug) {
+    const arr = Array.isArray(q.slug) ? q.slug : String(q.slug).split('/');
+    const s = arr.filter(Boolean).join('/');
+    if (s) return s.replace(/^api\//, '');
+  }
+  if (q.path && typeof q.path === 'string' && !q.slug) {
+    const s = q.path.replace(/^\/?api\//, '').replace(/\/$/, '');
+    if (s && !s.includes('index.js')) return s;
+  }
+  // ② 本地 server.js：直接传原始 url，形如 /api/publish
   const p = String(req.pathname || req.url || '').split('?')[0];
   return p.replace(/^\/api\/?/, '').replace(/\/$/, '');
+}
+
+/** 去掉框架注入的保留字段，避免污染业务查询参数 */
+function cleanQuery(q) {
+  const out = {};
+  Object.keys(q || {}).forEach((k) => {
+    if (k === 'slug' || k === 'path' || k === '__path') return;
+    out[k] = q[k];
+  });
+  return out;
 }
 
 async function handler(req, res) {
@@ -56,7 +77,11 @@ async function handler(req, res) {
       return send(res, 200, {
         ok: true,
         time: Date.now(),
-        version: '3.4-web',
+        version: '3.4-web-r2',
+        // 以下几个字段专用于部署自查：能看到 route 说明路由通了
+        route: path,
+        rawUrl: String(req.url || ''),
+        slug: (req.query && req.query.slug) || null,
         storage: store.status(),
         vercel: Boolean(process.env.VERCEL)
       });
@@ -93,7 +118,7 @@ async function handler(req, res) {
         return send(res, 200, await domain.getPostDetail(userId, String(req.query.id || '')));
       }
       if (path === 'search') {
-        return send(res, 200, await domain.searchPosts(userId, req.query || {}));
+        return send(res, 200, await domain.searchPosts(userId, cleanQuery(req.query)));
       }
       if (path === 'messages') {
         const list = await domain.listMessages(userId);
